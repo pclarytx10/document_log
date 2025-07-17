@@ -62,8 +62,9 @@ class HierarchicalWorkflowVisualizer:
         return fig
     
     def _plot_single_family_tree(self, root_doc, ax):
-        """Plot a single family tree on given axes"""
-        G = self.wf.get_document_family_tree(root_doc)
+        """Plot a single family tree with complete state transition flow"""
+        # Create a comprehensive workflow graph showing all state transitions
+        G = self._create_workflow_graph_for_family(root_doc)
         
         if len(G.nodes()) == 0:
             ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
@@ -71,39 +72,143 @@ class HierarchicalWorkflowVisualizer:
             return
         
         # Create hierarchical positions
-        pos = self._calculate_tree_positions(G, root_doc)
+        pos = self._calculate_workflow_positions(G, root_doc)
         
-        # Color nodes by state and activity
-        for node in G.nodes():
-            state = self.wf.get_document_current_state(node)
-            is_active = self.wf.document_metadata[node]['is_active']
+        # Draw edges first
+        for edge in G.edges(data=True):
+            from_node, to_node, edge_data = edge
+            edge_type = edge_data.get('type', 'transition')
             
-            # Choose color and style
-            color = self.state_colors.get(state, 'white')
-            edge_color = 'black' if is_active else 'red'
-            edge_style = '-' if is_active else '--'
-            alpha = 1.0 if is_active else 0.6
+            if edge_type == 'revision':
+                # Parent-child relationship edge
+                ax.plot([pos[from_node][0], pos[to_node][0]], 
+                       [pos[from_node][1], pos[to_node][1]], 
+                       'r--', linewidth=3, alpha=0.7)
+            else:
+                # State transition edge
+                ax.plot([pos[from_node][0], pos[to_node][0]], 
+                       [pos[from_node][1], pos[to_node][1]], 
+                       'k-', linewidth=2, alpha=0.8)
+        
+        # Draw nodes
+        for node in G.nodes(data=True):
+            node_id, node_data = node
+            node_type = node_data.get('type', 'state')
             
-            ax.scatter(pos[node][0], pos[node][1], 
-                      c=color, s=800, alpha=alpha,
-                      edgecolors=edge_color, linewidth=2)
+            if node_type == 'document':
+                # Document start node
+                color = 'lightblue'
+                size = 1000
+                shape = 's'  # square
+            else:
+                # State node
+                state = node_data.get('state')
+                is_active = node_data.get('is_active', True)
+                color = self.state_colors.get(state, 'white')
+                size = 600
+                alpha = 1.0 if is_active else 0.6
+                edge_color = 'black' if is_active else 'red'
+                
+                ax.scatter(pos[node_id][0], pos[node_id][1], 
+                          c=color, s=size, alpha=alpha,
+                          edgecolors=edge_color, linewidth=2)
             
             # Add labels
-            short_name = node.split('_')[-1] if '_' in node else node
-            ax.annotate(f"{short_name}\n({state})", pos[node], 
-                       ha='center', va='center', fontsize=8, fontweight='bold')
+            label = node_data.get('label', node_id)
+            ax.annotate(label, pos[node_id], 
+                       ha='center', va='center', fontsize=7, fontweight='bold')
         
-        # Draw edges
-        for edge in G.edges():
-            x1, y1 = pos[edge[0]]
-            x2, y2 = pos[edge[1]]
-            ax.plot([x1, x2], [y1, y2], 'k-', alpha=0.5, linewidth=2)
-            ax.annotate('', xy=(x2, y2), xytext=(x1, y1),
-                       arrowprops=dict(arrowstyle='->', color='gray', lw=1.5))
-        
-        ax.set_title(f"Family Tree: {root_doc}", fontweight='bold', fontsize=10)
+        ax.set_title(f'Complete Workflow: {root_doc}', fontsize=10, fontweight='bold')
         ax.set_aspect('equal')
         ax.axis('off')
+    
+    def _create_workflow_graph_for_family(self, root_doc):
+        """Create a graph showing complete workflow for a document family"""
+        import networkx as nx
+        G = nx.DiGraph()
+        
+        # Get all documents in this family
+        family_docs = [root_doc] + self.wf.get_document_descendants(root_doc)
+        
+        # Track final nodes for connecting child documents
+        final_nodes = {}
+        
+        for doc_id in family_docs:
+            if doc_id not in self.wf.document_logs:
+                continue
+                
+            logs = self.wf.document_logs[doc_id]
+            prev_node = None
+            
+            # For root document, add START node. For child documents, they'll connect to parent's revise node
+            if self.wf.document_metadata[doc_id]['parent'] is None:
+                # Root document gets a START node
+                doc_start_node = f"{doc_id}_START"
+                G.add_node(doc_start_node, 
+                          type='document', 
+                          label=f"{doc_id}\n[START]",
+                          document=doc_id)
+                prev_node = doc_start_node
+            
+            # Add state transition nodes
+            for i, log in enumerate(logs):
+                state_node = f"{doc_id}_STATE_{i}_{log['to_state']}"
+                is_active = self.wf.document_metadata[doc_id]['is_active']
+                
+                G.add_node(state_node,
+                          type='state',
+                          state=log['to_state'],
+                          is_active=is_active,
+                          label=f"{log['to_state']}\n({doc_id})",
+                          document=doc_id,
+                          user=log['user_id'],
+                          notes=log['notes'])
+                
+                if prev_node:
+                    G.add_edge(prev_node, state_node, type='transition')
+                
+                prev_node = state_node
+            
+            # Store the final node for this document
+            final_nodes[doc_id] = prev_node
+        
+        # Connect child documents to their parent's revise node
+        for doc_id in family_docs:
+            parent_id = self.wf.document_metadata[doc_id]['parent']
+            if parent_id and parent_id in final_nodes:
+                # Find the first state node of the child (skip START node)
+                child_logs = self.wf.document_logs[doc_id]
+                if child_logs:
+                    first_child_state = f"{doc_id}_STATE_0_{child_logs[0]['to_state']}"
+                    parent_final = final_nodes[parent_id]
+                    
+                    if first_child_state in G.nodes() and parent_final:
+                        G.add_edge(parent_final, first_child_state, type='revision')
+        
+        return G
+    
+    def _calculate_workflow_positions(self, G, root_doc):
+        """Calculate positions for workflow graph nodes"""
+        pos = {}
+        
+        # Group nodes by document
+        doc_nodes = {}
+        for node, data in G.nodes(data=True):
+            doc = data.get('document', root_doc)
+            if doc not in doc_nodes:
+                doc_nodes[doc] = []
+            doc_nodes[doc].append(node)
+        
+        # Position documents vertically and their states horizontally
+        y_offset = 0
+        for doc_id, nodes in doc_nodes.items():
+            x_offset = 0
+            for node in nodes:
+                pos[node] = (x_offset, y_offset)
+                x_offset += 2
+            y_offset -= 3
+        
+        return pos
     
     def _calculate_tree_positions(self, G, root):
         """Calculate positions for tree layout"""
@@ -325,54 +430,101 @@ class HierarchicalWorkflowVisualizer:
         return fig
 
 def create_complex_example():
-    """Create a complex example with multiple document families"""
+    """Create a complex example following the Policy Doc 001 journey with multiple children"""
     from parent_child_state_changes import HierarchicalDocumentWorkflowManager
     
     wf = HierarchicalDocumentWorkflowManager()
     
-    # Family 1: Policy document with multiple revisions
-    wf.create_document('POLICY-001', user_id='alice', notes='Initial HR policy')
-    wf.log_state_change('POLICY-001', 'draft', 'review', 'alice')
-    revision1 = wf.log_state_change('POLICY-001', 'review', 'revise', 'bob', 'Legal review needed')
+    print("Policy Doc 001 Journey:")
+    print("======================")
     
-    child1 = revision1['child_document']
-    wf.log_state_change(child1, 'draft', 'review', 'alice')
-    revision2 = wf.log_state_change(child1, 'review', 'revise', 'bob', 'Minor corrections')
+    # Step 1: Charlie creates Policy Doc 001 → Draft
+    wf.create_document('Policy Doc 001', user_id='Charlie', notes='Initial policy document created')
+    print("1. Charlie creates Policy Doc 001 → Draft")
     
-    grandchild1 = revision2['child_document']
-    wf.log_state_change(grandchild1, 'draft', 'review', 'alice')
-    wf.log_state_change(grandchild1, 'review', 'approve', 'bob')
+    # Step 2: Charlie submits for review → Review
+    wf.log_state_change('Policy Doc 001', 'draft', 'review', 'Charlie', 'Submitted for initial review')
+    print("2. Charlie submits for review → Review")
     
-    # Family 2: Manual that gets rejected
-    wf.create_document('MANUAL-042', user_id='charlie', notes='User manual draft')
-    wf.log_state_change('MANUAL-042', 'draft', 'review', 'charlie')
-    wf.log_state_change('MANUAL-042', 'review', 'reject', 'bob', 'Out of scope')
+    # Step 3: Alice reviews and requests updates → Update
+    wf.log_state_change('Policy Doc 001', 'review', 'update', 'Alice', 'Needs updates after review')
+    print("3. Alice reviews and requests updates → Update")
     
-    # Family 3: Quick approval
-    wf.create_document('PROC-123', user_id='david', notes='Simple procedure')
-    wf.log_state_change('PROC-123', 'draft', 'review', 'david')
-    wf.log_state_change('PROC-123', 'review', 'approve', 'bob')
+    # Step 4: Charlie resubmits updated version → Review
+    wf.log_state_change('Policy Doc 001', 'update', 'review', 'Charlie', 'Updated version submitted for review')
+    print("4. Charlie resubmits updated version → Review")
     
-    # Post-approval update
-    wf.log_state_change('PROC-123', 'approve', 'update', 'david', 'Regulatory change')
-    wf.log_state_change('PROC-123', 'update', 'review', 'david')
-    wf.log_state_change('PROC-123', 'review', 'approve', 'bob')
+    # Step 5: Alice reviews and requests major revisions → Revise (terminates Policy Doc 001, creates child)
+    revision_result = wf.log_state_change('Policy Doc 001', 'review', 'revise', 'Alice', 'Major revisions needed, creating new version')
+    print("5. Alice reviews and requests major revisions → Revise (terminates Policy Doc 001, creates child)")
     
-    # Family 4: Complex revision tree
-    wf.create_document('GUIDE-456', user_id='eve', notes='Training guide')
-    wf.log_state_change('GUIDE-456', 'draft', 'review', 'eve')
+    print("\nChild Document Journey (Policy Doc 002 in business terms):")
+    print("=========================================================")
     
-    # Multiple revision branches
-    rev1 = wf.log_state_change('GUIDE-456', 'review', 'revise', 'bob', 'Content issues')
-    child2 = rev1['child_document']
-    wf.log_state_change(child2, 'draft', 'review', 'eve')
+    # Step 6: System automatically creates child document → Draft
+    child_doc_002_id = revision_result['child_document']
+    print(f"6. System automatically creates child document → Draft ({child_doc_002_id})")
     
-    rev2 = wf.log_state_change(child2, 'review', 'revise', 'bob', 'Format issues')
-    grandchild2 = rev2['child_document']
-    wf.log_state_change(grandchild2, 'draft', 'review', 'eve')
-    wf.log_state_change(grandchild2, 'review', 'approve', 'bob')
+    # Step 7: Charlie submits revised version → Review
+    wf.log_state_change(child_doc_002_id, 'draft', 'review', 'Charlie', 'Revised version ready for review')
+    print("7. Charlie submits revised version → Review")
+    
+    # Step 8: Alice reviews and rejects → Reject
+    wf.log_state_change(child_doc_002_id, 'review', 'reject', 'Alice', 'Still not meeting requirements, rejected')
+    print("8. Alice reviews and rejects → Reject")
+    
+    print("\nChild Document Journey (Policy Doc 003 in business terms):")
+    print("=========================================================")
+    
+    # Step 9: Charlie creates a new child document draft from Parent 001 → Draft
+    child_doc_003_id = wf.create_document('Policy Doc 003', parent_id='Policy Doc 001', user_id='Charlie', notes='New draft based on Policy Doc 001 after rejection of first revision')
+    print(f"9. Charlie creates a new child document draft from Parent 001 → Draft ({child_doc_003_id})")
+    
+    # Step 10: Charlie submits revised version → Review
+    wf.log_state_change(child_doc_003_id, 'draft', 'review', 'Charlie', 'New revised version ready for review')
+    print("10. Charlie submits revised version → Review")
+    
+    # Step 11: Alice reviews and grants final approval → Approve
+    wf.log_state_change(child_doc_003_id, 'review', 'approve', 'Alice', 'Final approval granted')
+    print("11. Alice reviews and grants final approval → Approve")
+    
+    print("\nWorkflow Summary:")
+    print("================")
+    print("Policy Doc 001: Draft → Review → Update → Review → Revise (TERMINATED)")
+    print(f"{child_doc_002_id}: Draft → Review → Reject (TERMINATED)")
+    print(f"{child_doc_003_id}: Draft → Review → Approve (ACTIVE)")
+    print(f"\nParent-Child Relationships:")
+    print(f"  Policy Doc 001 → {child_doc_002_id} (REJECTED)")
+    print(f"  Policy Doc 001 → {child_doc_003_id} (APPROVED)")
+    
+    # Add debugging info and simple text visualization
+    print("\nDocument Verification:")
+    print("=====================")
+    print(f"Root documents: {wf.get_root_documents()}")
+    print(f"All documents: {list(wf.document_metadata.keys())}")
+    print(f"Active documents: {wf.get_active_documents()}")
+    
+    # Simple text-based family tree
+    print("\nFamily Tree (Text-based):")
+    print("=========================")
+    for root in wf.get_root_documents():
+        _print_family_tree_text(wf, root, 0)
     
     return wf
+
+def _print_family_tree_text(wf, doc_id, indent=0):
+    """Print a simple text-based family tree"""
+    prefix = "  " * indent
+    state = wf.get_document_current_state(doc_id)
+    is_active = wf.document_metadata[doc_id]['is_active']
+    status = "ACTIVE" if is_active else "TERMINATED"
+    print(f"{prefix}├─ {doc_id} [{state}] ({status})")
+    
+    # Print children
+    children = wf.document_metadata[doc_id].get('children', [])
+    for child in children:
+        _print_family_tree_text(wf, child, indent + 1)
+    
 
 def run_hierarchical_examples():
     """Run all hierarchical workflow visualizations"""
@@ -407,9 +559,16 @@ def run_hierarchical_examples():
     print(f"\nRoot Documents: {wf.get_root_documents()}")
     print(f"Active Documents: {wf.get_active_documents()}")
     
+    # Show detailed workflow table
+    print("\n" + "="*60)
+    print("DETAILED WORKFLOW TRANSITIONS TABLE")
+    print("="*60)
+    detailed_df = wf.export_detailed_workflow_data()
+    print(detailed_df[['document_id', 'parent', 'workflow_path', 'final_state', 'is_active', 'document_lineage']].to_string(index=False))
+    
     # Show genealogy table
     print("\n" + "="*50)
-    print("DOCUMENT GENEALOGY TABLE")
+    print("DOCUMENT GENEALOGY SUMMARY")
     print("="*50)
     df = wf.export_genealogy_data()
     print(df[['document_id', 'parent', 'current_state', 'is_active', 'revision_depth', 'lineage']].to_string(index=False))

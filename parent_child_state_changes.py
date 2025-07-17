@@ -47,6 +47,7 @@ class HierarchicalDocumentWorkflowManager:
             ('review', 'approve', {'action': 'approve_document'}),
             ('review', 'reject', {'action': 'reject_document'}),
             ('review', 'revise', {'action': 'request_revisions', 'creates_child': True}),
+            ('review', 'update', {'action': 'request_update_from_review'}),
             ('approve', 'update', {'action': 'request_update'}),
             ('update', 'review', {'action': 'submit_updated_version'}),
             ('draft', 'withdraw', {'action': 'withdraw_draft'}),
@@ -113,9 +114,16 @@ class HierarchicalDocumentWorkflowManager:
         # Update document metadata
         self.document_metadata[document_id]['current_state'] = to_state
         
-        # Handle special case: revise state creates child and terminates current
-        if to_state == 'revise':
-            return self._handle_revision(document_id, user_id, notes)
+        # Handle terminal states
+        if to_state in self.workflow_graph.nodes():
+            state_attrs = self.workflow_graph.nodes[to_state]
+            if state_attrs.get('terminal', False):
+                # Mark document as inactive for all terminal states
+                self.document_metadata[document_id]['is_active'] = False
+                
+                # Handle special case: revise state creates child
+                if to_state == 'revise':
+                    return self._handle_revision(document_id, user_id, notes)
         
         return log_entry
     
@@ -123,8 +131,7 @@ class HierarchicalDocumentWorkflowManager:
         """
         Handle revision: terminate current document and create child
         """
-        # Mark current document as inactive (terminated by revision)
-        self.document_metadata[document_id]['is_active'] = False
+        # Document is already marked as inactive by the terminal state handler
         
         # Generate child document ID
         child_id = f"{document_id}_rev_{len(self.document_metadata[document_id]['children']) + 1}"
@@ -341,6 +348,40 @@ class HierarchicalDocumentWorkflowManager:
                 'revision_depth': len(lineage) - 1,
                 'children_count': len(metadata['children']),
                 'lineage': ' → '.join(lineage)
+            })
+        
+        return pd.DataFrame(data)
+    
+    def export_detailed_workflow_data(self):
+        """Export detailed workflow data showing all state transitions for each document"""
+        data = []
+        for doc_id, logs in self.document_logs.items():
+            metadata = self.document_metadata[doc_id]
+            lineage = self.get_document_lineage(doc_id)
+            
+            # Create state transition sequence
+            transitions = []
+            for log in logs:
+                if log['from_state'] is None:
+                    transitions.append(log['to_state'])
+                else:
+                    transitions.append(f"{log['from_state']}→{log['to_state']}")
+            
+            # Get complete workflow path
+            workflow_path = ' | '.join(transitions)
+            
+            data.append({
+                'document_id': doc_id,
+                'parent': metadata['parent'],
+                'workflow_path': workflow_path,
+                'final_state': metadata['current_state'],
+                'is_active': metadata['is_active'],
+                'created_by': metadata['created_by'],
+                'creation_time': metadata['creation_time'],
+                'revision_depth': len(lineage) - 1,
+                'children_count': len(metadata['children']),
+                'document_lineage': ' → '.join(lineage),
+                'total_transitions': len(logs)
             })
         
         return pd.DataFrame(data)
