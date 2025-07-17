@@ -600,9 +600,24 @@ def create_complex_example():
     wf.log_state_change(child_doc_003_id, 'draft', 'review', 'Charlie', 'New revised version ready for review')
     print("10. Charlie submits revised version → Review")
     
-    # Step 11: Alice reviews and grants final approval → Approve
-    wf.log_state_change(child_doc_003_id, 'review', 'approve', 'Alice', 'Final approval granted')
-    print("11. Alice reviews and grants final approval → Approve")
+    # Step 11: Charlie withdraws Doc 003 → Withdraw
+    wf.log_state_change(child_doc_003_id, 'review', 'withdraw', 'Charlie', 'Withdrawing document due to new approach')
+    print("11. Charlie withdraws Doc 003 → Withdraw")
+    
+    print("\nChild Document Journey (Policy Doc 004 in business terms):")
+    print("=========================================================")
+    
+    # Step 12: Charlie creates a new child document draft from Parent 002 → Draft
+    child_doc_004_id = wf.create_document('Policy Doc 004', parent_id=child_doc_002_id, user_id='Charlie', notes='New draft based on rejected Policy Doc 002 with improvements')
+    print(f"12. Charlie creates a new child document draft from Parent 002 → Draft ({child_doc_004_id})")
+    
+    # Step 13: Charlie submits revised version → Review
+    wf.log_state_change(child_doc_004_id, 'draft', 'review', 'Charlie', 'Improved version ready for review')
+    print("13. Charlie submits revised version → Review")
+    
+    # Step 14: Alice reviews and grants final approval → Approve
+    wf.log_state_change(child_doc_004_id, 'review', 'approve', 'Alice', 'Final approval granted')
+    print("14. Alice reviews and grants final approval → Approve")
     
     print("\nWorkflow Summary:")
     print("================")

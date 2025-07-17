@@ -59,10 +59,40 @@ class HierarchicalDocumentWorkflowManager:
         for from_state, to_state, attrs in transitions:
             self.workflow_graph.add_edge(from_state, to_state, **attrs)
     
+    def _generate_child_document_id(self, parent_id):
+        """
+        Generate a properly formatted child document ID following naming conventions:
+        - First level revision: {parent_id}_rev_{number}
+        - Nested revision: {parent_id}_rev_{number}.{number}
+        """
+        if parent_id not in self.document_metadata:
+            raise ValueError(f"Parent document {parent_id} does not exist")
+        
+        # Count existing children to determine the next revision number
+        children_count = len(self.document_metadata[parent_id]['children'])
+        next_revision_number = children_count + 1
+        
+        # Check if parent is already a revision (contains "_rev_")
+        if "_rev_" in parent_id:
+            # Parent is a revision, use dot notation for nested revision
+            return f"{parent_id}.{next_revision_number}"
+        else:
+            # Parent is root document, use standard revision notation
+            return f"{parent_id}_rev_{next_revision_number}"
+    
     def create_document(self, document_id, parent_id=None, user_id=None, notes=None):
         """
         Create a new document (root or child)
+        If parent_id is provided and document_id doesn't follow naming convention, 
+        automatically generate proper child document ID
         """
+        # If creating a child document, ensure proper naming convention
+        if parent_id is not None:
+            expected_id = self._generate_child_document_id(parent_id)
+            if document_id != expected_id:
+                # Auto-correct to proper naming convention
+                document_id = expected_id
+        
         if document_id in self.document_metadata:
             raise ValueError(f"Document {document_id} already exists")
         
