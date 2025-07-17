@@ -24,7 +24,7 @@ class HierarchicalWorkflowVisualizer:
             'withdraw': '#f5f5f5'    # Light gray
         }
     
-    def plot_family_trees_grid(self, figsize=(16, 12)):
+    def plot_family_trees_grid(self, figsize=(19.2, 10.8)):
         """Create a grid showing all family trees"""
         root_docs = self.wf.get_root_documents()
         
@@ -74,21 +74,32 @@ class HierarchicalWorkflowVisualizer:
         # Create hierarchical positions
         pos = self._calculate_workflow_positions(G, root_doc)
         
-        # Draw edges first
+        # Draw edges with tree-style connections
         for edge in G.edges(data=True):
             from_node, to_node, edge_data = edge
             edge_type = edge_data.get('type', 'transition')
             
             if edge_type == 'revision':
-                # Parent-child relationship edge
-                ax.plot([pos[from_node][0], pos[to_node][0]], 
-                       [pos[from_node][1], pos[to_node][1]], 
-                       'r--', linewidth=3, alpha=0.7)
+                # Parent-child relationship: draw tree-style branch
+                from_pos = pos[from_node]
+                to_pos = pos[to_node]
+                
+                # Draw tree-style L-shaped connection
+                # Vertical line down from parent
+                mid_y = (from_pos[1] + to_pos[1]) / 2
+                
+                # Draw the branch: parent -> down -> across -> to child
+                ax.plot([from_pos[0], from_pos[0]], [from_pos[1], mid_y], 
+                       'k-', linewidth=3, alpha=0.8)  # Vertical down
+                ax.plot([from_pos[0], to_pos[0]], [mid_y, mid_y], 
+                       'k-', linewidth=3, alpha=0.8)  # Horizontal across
+                ax.plot([to_pos[0], to_pos[0]], [mid_y, to_pos[1]], 
+                       'k-', linewidth=3, alpha=0.8)  # Vertical to child
             else:
-                # State transition edge
+                # State transition edge (within same document)
                 ax.plot([pos[from_node][0], pos[to_node][0]], 
                        [pos[from_node][1], pos[to_node][1]], 
-                       'k-', linewidth=2, alpha=0.8)
+                       'k-', linewidth=3, alpha=0.8)
         
         # Draw nodes
         for node in G.nodes(data=True):
@@ -98,14 +109,17 @@ class HierarchicalWorkflowVisualizer:
             if node_type == 'document':
                 # Document start node
                 color = 'lightblue'
-                size = 1000
-                shape = 's'  # square
+                size = 2000  # Larger for 1920x1080
+                edge_color = 'darkblue'
+                ax.scatter(pos[node_id][0], pos[node_id][1], 
+                          c=color, s=size, marker='s',
+                          edgecolors=edge_color, linewidth=3)
             else:
                 # State node
                 state = node_data.get('state')
                 is_active = node_data.get('is_active', True)
                 color = self.state_colors.get(state, 'white')
-                size = 600
+                size = 1200  # Larger for 1920x1080
                 alpha = 1.0 if is_active else 0.6
                 edge_color = 'black' if is_active else 'red'
                 
@@ -116,7 +130,7 @@ class HierarchicalWorkflowVisualizer:
             # Add labels
             label = node_data.get('label', node_id)
             ax.annotate(label, pos[node_id], 
-                       ha='center', va='center', fontsize=7, fontweight='bold')
+                       ha='center', va='center', fontsize=10, fontweight='bold')
         
         ax.set_title(f'Complete Workflow: {root_doc}', fontsize=10, fontweight='bold')
         ax.set_aspect('equal')
@@ -172,11 +186,11 @@ class HierarchicalWorkflowVisualizer:
             # Store the final node for this document
             final_nodes[doc_id] = prev_node
         
-        # Connect child documents to their parent's revise node
+        # Connect child documents directly to their parent's terminal node
         for doc_id in family_docs:
             parent_id = self.wf.document_metadata[doc_id]['parent']
             if parent_id and parent_id in final_nodes:
-                # Find the first state node of the child (skip START node)
+                # Find the first state node of the child and connect it directly to parent's final node
                 child_logs = self.wf.document_logs[doc_id]
                 if child_logs:
                     first_child_state = f"{doc_id}_STATE_0_{child_logs[0]['to_state']}"
@@ -188,27 +202,129 @@ class HierarchicalWorkflowVisualizer:
         return G
     
     def _calculate_workflow_positions(self, G, root_doc):
-        """Calculate positions for workflow graph nodes"""
+        """Calculate positions for workflow graph nodes with proper scaling for 1920x1080"""
         pos = {}
         
-        # Group nodes by document
-        doc_nodes = {}
-        for node, data in G.nodes(data=True):
-            doc = data.get('document', root_doc)
-            if doc not in doc_nodes:
-                doc_nodes[doc] = []
-            doc_nodes[doc].append(node)
+        # Try to use networkx layout algorithms for better positioning
+        try:
+            # Use hierarchical layout if available
+            import networkx as nx
+            pos = nx.nx_agraph.graphviz_layout(G, prog='dot')
+        except:
+            # Fallback to manual positioning
+            pos = self._manual_workflow_layout(G, root_doc)
         
-        # Position documents vertically and their states horizontally
-        y_offset = 0
-        for doc_id, nodes in doc_nodes.items():
-            x_offset = 0
-            for node in nodes:
-                pos[node] = (x_offset, y_offset)
-                x_offset += 2
-            y_offset -= 3
+        # Scale positions to fit 1920x1080 with proper margins
+        if pos:
+            pos = self._scale_positions(pos, target_width=18, target_height=9)
         
         return pos
+    
+    def _manual_workflow_layout(self, G, root_doc):
+        """Manual layout for workflow graph in tree structure with angled branches"""
+        pos = {}
+        
+        # Create a proper tree layout where child workflows branch at angles from parent
+        def layout_document_tree(doc_id, start_x=0, start_y=0, base_branch_length=8):
+            """Recursively layout document and its children with angled branches"""
+            if doc_id not in self.wf.document_metadata:
+                return start_x
+            
+            # Get nodes for this document
+            doc_nodes = []
+            for node, data in G.nodes(data=True):
+                if data.get('document') == doc_id:
+                    doc_nodes.append(node)
+            
+            # Sort nodes by state sequence
+            doc_nodes.sort()
+            
+            # Position nodes for this document horizontally
+            current_x = start_x
+            for node in doc_nodes:
+                pos[node] = (current_x, start_y)
+                current_x += 4  # Horizontal spacing between states
+            
+            # Get the final node position for branching (parent terminating node)
+            final_node_pos = (current_x - 4, start_y)  # Last node position
+            
+            # Layout children branching at angles from the final node
+            children = self.wf.document_metadata[doc_id].get('children', [])
+            if children:
+                import math
+                
+                # Calculate angles for children
+                num_children = len(children)
+                base_angle = 45  # Base angle in degrees
+                
+                if num_children == 1:
+                    # Single child: branch at -45 degrees (down and right)
+                    angles = [-base_angle]
+                else:
+                    # Multiple children: alternate positive and negative angles
+                    angles = []
+                    for i in range(num_children):
+                        # Reduce angle by 50% for each additional branch beyond the first two
+                        if i < 2:
+                            current_angle = base_angle
+                        else:
+                            current_angle = base_angle * (0.5 ** (i - 1))
+                        
+                        # Alternate positive and negative
+                        if i % 2 == 0:
+                            angles.append(-current_angle)  # Negative (down-right)
+                        else:
+                            angles.append(current_angle)   # Positive (up-right)
+                
+                # Position each child at the calculated angle
+                for i, (child_doc, angle) in enumerate(zip(children, angles)):
+                    # Calculate child position using angle
+                    angle_rad = math.radians(angle)
+                    branch_length = base_branch_length
+                    
+                    # Calculate end position of branch
+                    child_start_x = final_node_pos[0] + branch_length * math.cos(angle_rad)
+                    child_start_y = final_node_pos[1] + branch_length * math.sin(angle_rad)
+                    
+                    # Recursively layout the child document
+                    max_x = layout_document_tree(child_doc, child_start_x, child_start_y, base_branch_length)
+                    current_x = max(current_x, max_x)
+            
+            return current_x
+        
+        # Start layout from root document
+        layout_document_tree(root_doc, 0, 0)
+        
+        return pos
+    
+    def _scale_positions(self, pos, target_width=18, target_height=9):
+        """Scale positions to fit target dimensions"""
+        if not pos:
+            return pos
+        
+        # Get current bounds
+        x_coords = [p[0] for p in pos.values()]
+        y_coords = [p[1] for p in pos.values()]
+        
+        min_x, max_x = min(x_coords), max(x_coords)
+        min_y, max_y = min(y_coords), max(y_coords)
+        
+        current_width = max_x - min_x if max_x != min_x else 1
+        current_height = max_y - min_y if max_y != min_y else 1
+        
+        # Calculate scale factors
+        scale_x = target_width / current_width
+        scale_y = target_height / current_height
+        
+        # Apply scaling and centering
+        scaled_pos = {}
+        for node, (x, y) in pos.items():
+            # Scale and center
+            new_x = (x - min_x) * scale_x - target_width / 2
+            new_y = (y - min_y) * scale_y - target_height / 2
+            scaled_pos[node] = (new_x, new_y)
+        
+        return scaled_pos
     
     def _calculate_tree_positions(self, G, root):
         """Calculate positions for tree layout"""
@@ -541,9 +657,9 @@ def run_hierarchical_examples():
     
     # Generate all visualizations
     fig1 = viz.plot_family_trees_grid()
-    fig2 = viz.plot_revision_timeline()  
-    fig3 = viz.plot_state_distribution_by_generation()
-    fig4 = viz.plot_document_lifecycle_analysis()
+    #fig2 = viz.plot_revision_timeline()  
+    #fig3 = viz.plot_state_distribution_by_generation()
+    #fig4 = viz.plot_document_lifecycle_analysis()
     
     plt.show()
     
