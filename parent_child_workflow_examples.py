@@ -6,6 +6,7 @@ import numpy as np
 import seaborn as sns
 from matplotlib.patches import Rectangle, FancyBboxPatch
 import matplotlib.patches as patches
+import re
 
 class HierarchicalWorkflowVisualizer:
     """
@@ -74,34 +75,27 @@ class HierarchicalWorkflowVisualizer:
         # Create hierarchical positions
         pos = self._calculate_workflow_positions(G, root_doc)
         
-        # Draw edges with tree-style connections
+        # Draw edges with tree-style connections (zorder=1 for bottom layer)
         for edge in G.edges(data=True):
             from_node, to_node, edge_data = edge
             edge_type = edge_data.get('type', 'transition')
             
             if edge_type == 'revision':
-                # Parent-child relationship: draw tree-style branch
+                # Parent-child relationship: draw direct diagonal line
                 from_pos = pos[from_node]
                 to_pos = pos[to_node]
                 
-                # Draw tree-style L-shaped connection
-                # Vertical line down from parent
-                mid_y = (from_pos[1] + to_pos[1]) / 2
-                
-                # Draw the branch: parent -> down -> across -> to child
-                ax.plot([from_pos[0], from_pos[0]], [from_pos[1], mid_y], 
-                       'k-', linewidth=3, alpha=0.8)  # Vertical down
-                ax.plot([from_pos[0], to_pos[0]], [mid_y, mid_y], 
-                       'k-', linewidth=3, alpha=0.8)  # Horizontal across
-                ax.plot([to_pos[0], to_pos[0]], [mid_y, to_pos[1]], 
-                       'k-', linewidth=3, alpha=0.8)  # Vertical to child
+                # Draw direct diagonal line at calculated angle
+                ax.plot([from_pos[0], to_pos[0]], 
+                       [from_pos[1], to_pos[1]], 
+                       'k-', linewidth=3, alpha=0.8, zorder=1)
             else:
                 # State transition edge (within same document)
                 ax.plot([pos[from_node][0], pos[to_node][0]], 
                        [pos[from_node][1], pos[to_node][1]], 
-                       'k-', linewidth=3, alpha=0.8)
+                       'k-', linewidth=3, alpha=0.8, zorder=1)
         
-        # Draw nodes
+        # Draw nodes with higher zorder to ensure they're on top
         for node in G.nodes(data=True):
             node_id, node_data = node
             node_type = node_data.get('type', 'state')
@@ -109,28 +103,65 @@ class HierarchicalWorkflowVisualizer:
             if node_type == 'document':
                 # Document start node
                 color = 'lightblue'
-                size = 2000  # Larger for 1920x1080
+                size = 2000 * 2  # Increase by 50%
                 edge_color = 'darkblue'
+                # Draw white background circle first for better visibility
+                ax.scatter(pos[node_id][0], pos[node_id][1], 
+                          c='white', s=size*1.1, marker='o',
+                          edgecolors='none', zorder=3)
+                # Draw the actual node on top
                 ax.scatter(pos[node_id][0], pos[node_id][1], 
                           c=color, s=size, marker='s',
-                          edgecolors=edge_color, linewidth=3)
+                          edgecolors=edge_color, linewidth=3, zorder=4)
             else:
                 # State node
                 state = node_data.get('state')
                 is_active = node_data.get('is_active', True)
                 color = self.state_colors.get(state, 'white')
-                size = 1200  # Larger for 1920x1080
+                size = 1200 * 2  # Increase by 50%
                 alpha = 1.0 if is_active else 0.6
                 edge_color = 'black' if is_active else 'red'
                 
+                # Draw white background circle first for better visibility
+                ax.scatter(pos[node_id][0], pos[node_id][1], 
+                          c='white', s=size*1.1, marker='o',
+                          edgecolors='none', zorder=3)
+                # Draw the actual node on top
                 ax.scatter(pos[node_id][0], pos[node_id][1], 
                           c=color, s=size, alpha=alpha,
-                          edgecolors=edge_color, linewidth=2)
+                          edgecolors=edge_color, linewidth=2, zorder=4)
             
-            # Add labels
+            # Add labels on top of everything
             label = node_data.get('label', node_id)
-            ax.annotate(label, pos[node_id], 
-                       ha='center', va='center', fontsize=10, fontweight='bold')
+            # Custom placement for document name
+            if node_type == 'document':
+                # Place document name above the start node
+                doc_name = node_data.get('document', '')
+                ax.annotate(doc_name, (pos[node_id][0], pos[node_id][1]),
+                           xytext=(0, 40), textcoords='offset points',
+                           ha='center', va='bottom', fontsize=11, fontweight='bold', zorder=5)
+                # Place the rest of the label (e.g., [START]) at the node center
+                rest_label = label.replace(doc_name, '').replace('\n', '').replace('[START]', '[START]') if doc_name in label else label
+                ax.annotate(rest_label, pos[node_id],
+                           ha='center', va='center', fontsize=10, fontweight='bold', zorder=5)
+            elif node_type == 'state' and 'draft' in label and '(' in label:
+                # Place document name to the left of draft node if shown
+                # Extract document name from label
+                match = re.search(r'\((.*?)\)', label)
+                doc_name = match.group(1) if match else ''
+                # Place state label at node center
+                state_label = label.split('\n')[0]
+                ax.annotate(state_label, pos[node_id],
+                           ha='center', va='center', fontsize=10, fontweight='bold', zorder=5)
+                if doc_name:
+                    ax.annotate(doc_name, (pos[node_id][0], pos[node_id][1]),
+                               xytext=(-40, 0), textcoords='offset points',
+                               ha='right', va='center', fontsize=10, fontweight='bold', zorder=5)
+            else:
+                # Default: label at node center
+                ax.annotate(label, pos[node_id], 
+                           ha='center', va='center', fontsize=10, fontweight='bold',
+                           zorder=5)
         
         ax.set_title(f'Complete Workflow: {root_doc}', fontsize=10, fontweight='bold')
         ax.set_aspect('equal')
@@ -164,16 +195,27 @@ class HierarchicalWorkflowVisualizer:
                           document=doc_id)
                 prev_node = doc_start_node
             
-            # Add state transition nodes
+            # Add state transition nodes with smart labeling
             for i, log in enumerate(logs):
                 state_node = f"{doc_id}_STATE_{i}_{log['to_state']}"
                 is_active = self.wf.document_metadata[doc_id]['is_active']
+                
+                # Smart labeling logic
+                if log['to_state'] == 'draft' and i == 0 and prev_node and prev_node.endswith('_START'):
+                    # Draft node following START node - no document name
+                    label = f"{log['to_state']}"
+                elif log['to_state'] != 'draft':
+                    # Non-draft nodes - no document name
+                    label = f"{log['to_state']}"
+                else:
+                    # Draft nodes not following START - include document name
+                    label = f"{log['to_state']}\n({doc_id})"
                 
                 G.add_node(state_node,
                           type='state',
                           state=log['to_state'],
                           is_active=is_active,
-                          label=f"{log['to_state']}\n({doc_id})",
+                          label=label,
                           document=doc_id,
                           user=log['user_id'],
                           notes=log['notes'])
